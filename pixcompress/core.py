@@ -1,5 +1,5 @@
 from pathlib import Path
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import shutil
 from typing import Union, Optional
 
@@ -105,56 +105,71 @@ def compress(src: str,
         raise FileNotFoundError(f"Source not found: {src}")
 
     _ensure_dir(dst_p)
-
-    with Image.open(src_p) as img:
-        orig_size = src_p.stat().st_size
-
-        #convert to RGB if needed
-        if img.mode not in ("RGB", "RGBA", "L"):
-            img = img.convert("RGB")
-
-        img = _resize_if_needed(img, max_size)
-
-        exif_bytes = _get_exif(img) if preserve_exif else None
-        target = (convert_to or img.format or dst_p.suffix.replace(".", "")).upper()
-
-        if target in ("JPG", "JPEG"):
-            save_kwargs = {
-                "format": "JPEG",
-                "quality": int(quality),
-                "optimize": optimize,
-                "progressive": progressive,
-            }
-            if exif_bytes:
-                save_kwargs["exif"] = exif_bytes
-            img.save(dst_p, **save_kwargs)
-
-        elif target == "WEBP":
-            save_kwargs = {
-                "format": "WEBP",
-                "quality": int(quality),
-                "lossless": webp_lossless,
-                "method": 6,
-            }
-            img.save(dst_p, **save_kwargs)
-
-        elif target == "PNG":
-            if img.mode == "RGBA":
-                img.save(dst_p, format="PNG", optimize=optimize)
+    try:
+        with Image.open(src_p) as img:
+            orig_size = src_p.stat().st_size
+    
+            #convert to RGB if needed
+            if img.mode not in ("RGB", "RGBA", "L"):
+                img = img.convert("RGB")
+    
+            img = _resize_if_needed(img, max_size)
+    
+            exif_bytes = _get_exif(img) if preserve_exif else None
+            target = (convert_to or img.format or dst_p.suffix.replace(".", "")).upper()
+    
+            if target in ("JPG", "JPEG"):
+                save_kwargs = {
+                    "format": "JPEG",
+                    "quality": int(quality),
+                    "optimize": optimize,
+                    "progressive": progressive,
+                }
+                if exif_bytes:
+                    save_kwargs["exif"] = exif_bytes
+                img.save(dst_p, **save_kwargs)
+    
+            elif target == "WEBP":
+                save_kwargs = {
+                    "format": "WEBP",
+                    "quality": int(quality),
+                    "lossless": webp_lossless,
+                    "method": 6,
+                }
+                img.save(dst_p, **save_kwargs)
+    
+            elif target == "PNG":
+                if img.mode == "RGBA":
+                    img.save(dst_p, format="PNG", optimize=optimize)
+                else:
+                    if quality < 90:
+                        #reduce colors for smaller file
+                        img = img.convert("P", palette=Image.ADAPTIVE, colors=max(2, int(256 * quality / 100)))
+                    img.save(dst_p, format="PNG", optimize=optimize)
+    
             else:
-                if quality < 90:
-                    #reduce colors for smaller file
-                    img = img.convert("P", palette=Image.ADAPTIVE, colors=max(2, int(256 * quality / 100)))
-                img.save(dst_p, format="PNG", optimize=optimize)
-
-        else:
-            #fallback: try saving in current format, else copy
-            try:
-                img.save(dst_p)
-            except Exception:
-                shutil.copyfile(src_p, dst_p)
-
-    new_size = dst_p.stat().st_size
+                #fallback: try saving in current format, else copy
+                try:
+                    img.save(dst_p)
+                except Exception:
+                    shutil.copyfile(src_p, dst_p)
+    
+        new_size = dst_p.stat().st_size
+    except UnidentifiedImageError as e:
+        raise ValueError(
+            f"Cannot open image (may be corrupted or unsupported format): {src}. "
+            f"Original error: {e}"
+        )
+    except PermissionError as e:
+        raise PermissionError(
+            f"Permission denied when writing to destination: {dst}. "
+            f"Original error: {e}"
+        )
+    except OSError as e:
+        raise OSError(
+            f"Failed to save image '{dst}'. Possible disk space issue or unsupported format. "
+            f"Original error: {e}"
+        )
     return {"src": str(src_p), "dst": str(dst_p), "orig_size": orig_size, "new_size": new_size}
 
 
